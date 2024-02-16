@@ -237,11 +237,42 @@ module HLPTick3 =
 
         // Rotate a symbol
         let rotateSymbol (symLabel: string) (rotate: Rotation) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let findSymbol = 
+                model.Wire.Symbol.Symbols
+                |> Map.toList
+                |> List.tryFind (fun (_, sym) -> caseInvariantEqual sym.Component.Label symLabel)
+
+            match findSymbol with
+            | Some(id, sym) -> 
+                let rotatedSym = SymbolResizeHelpers.rotateSymbol rotate sym
+                let updatedSyms = Map.add id rotatedSym model.Wire.Symbol.Symbols
+                {model with Wire = {model.Wire with Symbol = {model.Wire.Symbol with Symbols = updatedSyms}}}
+            | None ->
+                failwithf "Symbol label not found" 
+            
+
 
         // Flip a symbol
         let flipSymbol (symLabel: string) (flip: SymbolT.FlipType) (model: SheetT.Model) : (SheetT.Model) =
-            failwithf "Not Implemented"
+            let findSymbol = 
+                model.Wire.Symbol.Symbols
+                |> Map.toList
+                |> List.tryFind (fun (_, sym) -> caseInvariantEqual sym.Component.Label symLabel)
+
+            match findSymbol with
+            | Some(id, sym) -> 
+                let flippedSym = SymbolResizeHelpers.flipSymbol flip sym
+                let updatedSyms = Map.add id flippedSym model.Wire.Symbol.Symbols
+                {model with Wire = {model.Wire with Symbol = {model.Wire.Symbol with Symbols = updatedSyms}}}
+            | None ->
+                failwithf "Symbol label not found" 
+
+
+
+
+
+
+
 
         /// Add a (newly routed) wire, source specifies the Output port, target the Input port.
         /// Return an error if either of the two ports specified is invalid, or if the wire duplicates and existing one.
@@ -337,13 +368,85 @@ module HLPTick3 =
         |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
         |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
         |> getOkOrFail
+    
+    let rectangular2DGrid  =
+        let generalGrid = 
+            let generatingX = fromList [-100.0..10.0..100.0]
+            let generatingY = fromList [-100.0..10.0..100.0]
 
+            product (fun x y -> (x, y)) generatingX generatingY
+        
+        let (_, _, DFFHeight, DFFWidth) = Symbol.getComponentProperties DFF "FF1"
+        let (_, _, NANDHeight, NANDWidth) = Symbol.getComponentProperties (GateN(And,2)) "G1"
+    
+        let filterCondition (x,y) =                    // Condition to test whether there is overlap between NAND and DFF
+            let xDistance = abs (x)
+            let yDistance = abs (y)
 
+            not( 
+                (xDistance + NANDWidth/2.0) < (DFFWidth) &&
+                (yDistance + NANDHeight/2.0) < (DFFHeight))
+        
 
+        let filteredGrid = generalGrid |> filter (fun(x,y) -> filterCondition (x,y)) 
+
+        filteredGrid |> map (fun (x,y) -> middleOfSheet + {X=x; Y=y})
+        
+    let randomiseRotation () =
+        let random = new System.Random()
+        match random.Next(0,4) with
+        | 0 -> Degree0
+        | 1 -> Degree90
+        | 2 -> Degree180 
+        | 3 -> Degree270
+        | _ -> failwith "Error generating random rotation"
+    
+    let randomiseFlip () =
+        let random = new System.Random()
+        match random.Next(0,2) with
+        | 0 -> SymbolT.FlipHorizontal
+        | 1 -> SymbolT.FlipVertical
+        | _ -> failwith "Error generating random flip"
+
+    let makeTest6Circuit (andPos:XYPos) =
+        let randomRotation = randomiseRotation ()
+        let randomFlip = randomiseFlip ()
+        initSheetModel
+        |> placeSymbol "G1" (GateN(And,2)) andPos
+        |> getOkOrFail
+        |> (fun model ->                    // To account for the fact that 0 and 180 do not work with SymbolResizeHelpers.rotateSymbol
+            match randomRotation with
+            | Degree0 -> model |> rotateSymbol "G1" Degree270 |> rotateSymbol "G1" Degree90
+            | Degree180 -> model |> rotateSymbol "G1" Degree90 |> rotateSymbol "G1" Degree90
+            | _ -> rotateSymbol "G1" randomRotation model)
+        |> (fun model ->                    // To account for the fact SymbolT.FlipVertical does not work
+            match randomFlip with 
+            | SymbolT.FlipVertical -> model |> rotateSymbol "G1" Degree90 |> rotateSymbol "G1" Degree90 |> flipSymbol "G1" SymbolT.FlipHorizontal
+            | _ -> flipSymbol "G1" SymbolT.FlipHorizontal model)
+        |> Ok
+        |> Result.bind (placeSymbol "FF1" DFF middleOfSheet)
+        |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+        |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+        |> getOkOrFail
+       
+    // let makeTest7Circuit (andPos:XYPos) =                        //testing flip independently
+    //     let randomFlip = randomiseFlip ()
+    //     initSheetModel
+    //     |> placeSymbol "G1" (GateN(And,2)) andPos
+    //     |> getOkOrFail
+    //     |> (fun model -> 
+    //         match randomFlip with 
+    //         | SymbolT.FlipVertical -> model |> rotateSymbol "G1" Degree90 |> rotateSymbol "G1" Degree90 |> flipSymbol "G1" SymbolT.FlipHorizontal
+    //         | _ -> flipSymbol "G1" SymbolT.FlipHorizontal model)
+    //     |> Ok
+    //     |> Result.bind (placeSymbol "FF1" DFF middleOfSheet)
+    //     |> Result.bind (placeWire (portOf "G1" 0) (portOf "FF1" 0))
+    //     |> Result.bind (placeWire (portOf "FF1" 0) (portOf "G1" 0) )
+    //     |> getOkOrFail
+    
 //------------------------------------------------------------------------------------------------//
 //-------------------------Example assertions used to test sheets---------------------------------//
 //------------------------------------------------------------------------------------------------//
-
 
     module Asserts =
 
@@ -446,6 +549,39 @@ module HLPTick3 =
                 dispatch
             |> recordPositionInTest testNum dispatch
 
+        // Q7 test
+        let test5 testNum firstSample dispatch =  
+            runTestOnSheets
+                "AND positioned in rectangular 2D grid around DFF"    
+                firstSample                               
+                rectangular2DGrid                                  
+                makeTest1Circuit                                   
+                Asserts.failOnWireIntersectsSymbol
+                dispatch
+            |> recordPositionInTest testNum dispatch
+
+    // Q10 test
+        let test6 testNum firstSample dispatch =   
+            runTestOnSheets
+                "test5 including arbitrary flip and rotate on AND"    
+                firstSample                               
+                rectangular2DGrid                                  
+                makeTest6Circuit                                   
+                Asserts.failOnWireIntersectsSymbol
+                dispatch
+            |> recordPositionInTest testNum dispatch
+
+        // let test7 testNum firstSample dispatch =                         // Checking flips work
+        //     runTestOnSheets
+        //         "Flip test"    
+        //         firstSample                               
+        //         rectangular2DGrid                                  
+        //         makeTest7Circuit                                   
+        //         Asserts.failOnAllTests
+        //         dispatch
+        //     |> recordPositionInTest testNum dispatch
+
+
         /// List of tests available which can be run ftom Issie File Menu.
         /// The first 9 tests can also be run via Ctrl-n accelerator keys as shown on menu
         let testsToRunFromSheetMenu : (string * (int -> int -> Dispatch<Msg> -> Unit)) list =
@@ -456,8 +592,8 @@ module HLPTick3 =
                 "Test2", test2 // example
                 "Test3", test3 // example
                 "Test4", test4 
-                "Test5", fun _ _ _ -> printf "Test5" // dummy test - delete line or replace by real test as needed
-                "Test6", fun _ _ _ -> printf "Test6"
+                "Test5", test5 
+                "Test6", test6
                 "Test7", fun _ _ _ -> printf "Test7"
                 "Test8", fun _ _ _ -> printf "Test8"
                 "Next Test Error", fun _ _ _ -> printf "Next Error:" // Go to the nexterror in a test
